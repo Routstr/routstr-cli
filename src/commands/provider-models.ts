@@ -9,6 +9,7 @@ import {
   render,
   resolveToken,
 } from "../client";
+import type { Pricing } from "../types";
 
 interface AdminModel {
   id: string;
@@ -121,8 +122,26 @@ export async function providerModelsShowCommand(
     printInfo(`  Context length:     ${m.context_length}`);
     if (m.canonical_slug) printInfo(`  Canonical slug:     ${m.canonical_slug}`);
     if (m.alias_ids?.length) printInfo(`  Aliases:            ${m.alias_ids.join(", ")}`);
+
+    const pricing = m.pricing ?? {};
+    const priceKeys = Object.keys(pricing);
+    if (priceKeys.length) {
+      printInfo("  Pricing (USD/token):");
+      for (const [k, v] of Object.entries(pricing)) {
+        printInfo(`    ${k.padEnd(20)} ${v}`);
+      }
+    }
+    const satsPricing = m.sats_pricing ?? {};
+    if (Object.keys(satsPricing).length) {
+      printInfo("  Pricing (sats/token, derived):");
+      for (const [k, v] of Object.entries(satsPricing)) {
+        printInfo(`    ${k.padEnd(20)} ${v}`);
+      }
+    }
   });
 }
+
+type PriceUnit = "per-token" | "per-1m";
 
 interface UpdateModelOptions {
   adminToken?: string;
@@ -130,6 +149,81 @@ interface UpdateModelOptions {
   enabled?: string;
   name?: string;
   description?: string;
+  // USD pricing fields (per token by default; see --price-unit)
+  prompt?: string;
+  completion?: string;
+  request?: string;
+  image?: string;
+  webSearch?: string;
+  internalReasoning?: string;
+  inputCacheRead?: string;
+  inputCacheWrite?: string;
+  maxPromptCost?: string;
+  maxCompletionCost?: string;
+  maxCost?: string;
+  // Advanced: raw JSON pricing object, merged over the current pricing
+  pricing?: string;
+  priceUnit?: string;
+}
+
+const PRICING_FIELDS: Array<{ option: keyof UpdateModelOptions; key: keyof Pricing }> = [
+  { option: "prompt", key: "prompt" },
+  { option: "completion", key: "completion" },
+  { option: "request", key: "request" },
+  { option: "image", key: "image" },
+  { option: "webSearch", key: "web_search" },
+  { option: "internalReasoning", key: "internal_reasoning" },
+  { option: "inputCacheRead", key: "input_cache_read" },
+  { option: "inputCacheWrite", key: "input_cache_write" },
+  { option: "maxPromptCost", key: "max_prompt_cost" },
+  { option: "maxCompletionCost", key: "max_completion_cost" },
+  { option: "maxCost", key: "max_cost" },
+];
+
+const PRICE_UNITS: PriceUnit[] = ["per-token", "per-1m"];
+
+function parsePrice(raw: string, key: string, unit: PriceUnit): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    printError(`Invalid --${key.replace(/_/g, "-")}: ${raw} (must be a non-negative number)`);
+    process.exit(1);
+  }
+  return unit === "per-1m" ? value / 1_000_000 : value;
+}
+
+function buildPricing(
+  current: Record<string, unknown>,
+  opts: UpdateModelOptions,
+): Record<string, unknown> {
+  let pricing: Record<string, unknown> = { ...current };
+
+  if (opts.pricing !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(opts.pricing);
+    } catch (e: unknown) {
+      printError(`Invalid --pricing JSON: ${String(e)}`);
+      process.exit(1);
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      printError("Invalid --pricing: must be a JSON object of pricing fields.");
+      process.exit(1);
+    }
+    pricing = { ...pricing, ...(parsed as Record<string, unknown>) };
+  }
+
+  const unit = (opts.priceUnit ?? "per-token") as PriceUnit;
+  if (!PRICE_UNITS.includes(unit)) {
+    printError(`Invalid --price-unit: ${opts.priceUnit} (use per-token or per-1m)`);
+    process.exit(1);
+  }
+
+  for (const { option, key } of PRICING_FIELDS) {
+    const raw = opts[option] as string | undefined;
+    if (raw !== undefined) pricing[key] = parsePrice(raw, key, unit);
+  }
+
+  return pricing;
 }
 
 export async function providerModelsUpdateCommand(
@@ -137,14 +231,17 @@ export async function providerModelsUpdateCommand(
   modelId: string,
   opts: UpdateModelOptions,
 ): Promise<void> {
+  const hasPricingField =
+    opts.pricing !== undefined || PRICING_FIELDS.some(({ option }) => opts[option] !== undefined);
   const hasField =
     opts.forwardedModelId !== undefined ||
     opts.enabled !== undefined ||
     opts.name !== undefined ||
-    opts.description !== undefined;
+    opts.description !== undefined ||
+    hasPricingField;
   if (!hasField) {
     printError(
-      "No fields to update. Pass one of: --forwarded-model-id, --enabled, --name, --description.",
+      "No fields to update. Pass one of: --forwarded-model-id, --enabled, --name, --description, --pricing <json>, or a price flag (--prompt, --completion, --request, --image, --web-search, --internal-reasoning, --input-cache-read, --input-cache-write, --max-prompt-cost, --max-completion-cost, --max-cost).",
     );
     process.exit(1);
   }
@@ -170,7 +267,7 @@ export async function providerModelsUpdateCommand(
     created: current.created,
     context_length: current.context_length,
     architecture: current.architecture,
-    pricing: current.pricing,
+    pricing: buildPricing(current.pricing ?? {}, opts),
     per_request_limits: current.per_request_limits,
     top_provider: current.top_provider,
     upstream_provider_id: current.upstream_provider_id,
