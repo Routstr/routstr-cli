@@ -106,7 +106,28 @@ Provider refs accept either numeric ID or stable slug. Prefer slugs in automatio
 Use the provider slug from \`routstr providers list -t <admin> -o json\` as \`<provider>\` when possible.
 - \`routstr providers models list <provider> [--source all|db|remote] -t <admin>\` — DB + upstream-discovered models
 - \`routstr providers models show <provider> <model_id> -t <admin>\` — full model detail
-- \`routstr providers models update <provider> <model_id> [--forwarded-model-id <id>|--enabled <bool>|--name|--description] -t <admin>\`
+- \`routstr providers models update <provider> <model_id> [--forwarded-model-id <id>|--enabled <bool>|--name|--description|PRICE_FLAGS] -t <admin>\`
+
+#### Pricing (admin-only)
+All price flags are USD and interpreted per-token by default. Pass \`--price-unit per-1m\`
+to enter human-friendly per-million prices instead (the CLI divides by 1e6).
+Flags: \`--prompt\`, \`--completion\`, \`--request\`, \`--image\`, \`--web-search\`,
+\`--internal-reasoning\`, \`--input-cache-read\`, \`--input-cache-write\`,
+\`--max-prompt-cost\`, \`--max-completion-cost\`, \`--max-cost\`.
+For anything exotic, \`--pricing '<json>'\` merges arbitrary pricing keys over the current
+pricing object. Sats pricing (\`sats_pricing\`) is derived server-side from USD pricing;
+set USD and re-read the model to confirm.
+
+Pricing examples:
+\`\`\`
+# $0.15 / 1M input, $0.60 / 1M output, cache read $0.003 / 1M
+routstr providers models update <provider> <model_id> --price-unit per-1m \\
+  --prompt 0.15 --completion 0.60 --input-cache-read 0.003 -t <admin>
+
+# exact per-token values, plus a raw JSON override
+routstr providers models update <provider> <model_id> \\
+  --prompt 1.5e-7 --completion 6e-7 --pricing '{"request":0.001}' -t <admin>
+\`\`\`
 
 Batch update example (loop over ids):
 \`\`\`
